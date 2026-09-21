@@ -1,0 +1,49 @@
+# AIRIN AI — Cloudflare Worker Backend
+# Deploy: npx wrangler deploy
+# Secrets: wrangler secret put GITHUB_CLIENT_ID | GITHUB_CLIENT_SECRET | SESSION_SECRET
+
+name = "airin-ai"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[dev]
+port = 8788
+local_protocol = "http"
+
+[observability]
+enabled = true
+
+[observability.traces]
+enabled = true
+
+# ── Bindings ──────────────────────────────────────────────
+[ai]
+binding = "AI"
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "airin-ai-files"
+preview_bucket_name = "airin-ai-files-preview"
+
+[[vectorize]]
+binding = "VECTORIZE_INDEX"
+index_name = "airin-memory"
+
+# Optional: KV for session / OAuth state (recommended)
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "928846f46c834590a6555e4e2cf41bbf"
+preview_id = "928846f46c834590a6555e4e2cf41bbf"
+
+# ── Vars (non-secret) ─────────────────────────────────────
+[vars]
+FRONTEND_ORIGIN = "http://localhost:3000"
+# Production: set to your Pages/Vercel/GH Pages origin, e.g. "https://airin.pages.dev"
+GITHUB_REDIRECT_URI = "http://localhost:8788/auth/github/callback"
+# Production: "https://airin-ai.putridinar.workers.dev/auth/github/callback"
+
+# Secrets (set via CLI, never commit):
+# GITHUB_CLIENT_ID
+# GITHUB_CLIENT_SECRET
+# SESSION_SECRET

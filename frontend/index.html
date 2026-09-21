@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>AIRIN AI — Asisten AI Cerdas</title>
+  <meta name="description" content="AIRIN AI — asisten AI serba bisa di Cloudflare Workers AI. Chat, coding, redesign, GitHub, vision." />
+  <meta name="theme-color" content="#0b0f1a" />
+  <meta name="color-scheme" content="dark" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✦</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#messages">Langsung ke chat</a>
+  <div id="sidebar-overlay" class="sidebar-overlay" aria-hidden="true"></div>
+
+  <div id="app">
+    <aside id="sidebar" aria-label="Navigasi AIRIN AI">
+      <div class="sidebar-top">
+        <div class="brand-row">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">✦</span>
+            <span class="brand-name">AIRIN</span>
+          </div>
+          <button id="btn-close-sidebar" class="icon-btn btn-close-sidebar" aria-label="Tutup menu" type="button">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
+        <button id="btn-new" class="nav-item nav-primary" type="button">
+          <i class="fa-regular fa-pen-to-square"></i>
+          <span>New chat</span>
+        </button>
+
+        <div class="side-divider"></div>
+
+        <div class="conv-section">
+          <div class="conv-label">Conversations</div>
+          <div id="conv-list" class="conv-list" role="list"></div>
+          <p id="conv-empty" class="conv-empty">
+            Percakapan dengan AIRIN akan muncul di sini.
+          </p>
+        </div>
+      </div>
+
+      <div class="sidebar-bottom">
+        <button id="btn-github" class="nav-item" type="button">
+          <i class="fa-brands fa-github"></i>
+          <span id="gh-btn-label">Connect GitHub</span>
+        </button>
+        <p id="gh-status" class="gh-status">Belum connect</p>
+        <div class="user-card">
+          <div class="user-avatar" id="user-avatar" aria-hidden="true">A</div>
+          <div class="user-meta">
+            <div class="user-name" id="user-name">Guest</div>
+            <div class="user-plan" id="user-plan">Anonymous</div>
+          </div>
+          <span id="online-dot" class="dot" title="Status backend" role="status"></span>
+        </div>
+        <p id="session-id" class="session-id">—</p>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header id="topbar">
+        <button id="btn-menu" class="icon-btn" aria-label="Buka menu" type="button">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+        <span class="top-title" id="chat-title">AIRIN</span>
+        <span class="temp-badge" id="mode-badge">
+          <i class="fa fa-microchip" aria-hidden="true"></i>
+          <span id="mode-badge-text">Qwen</span>
+        </span>
+      </header>
+
+      <div id="stage" class="stage is-empty">
+        <div id="empty-state" class="empty-state">
+          <h2 class="greeting" id="greeting">Hai, ada yang bisa AIRIN bantu?</h2>
+        </div>
+
+        <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions"></div>
+
+        <div class="composer-wrap">
+          <div id="preview-area" class="preview-area hidden">
+            <img id="img-preview" alt="Pratinjau gambar" />
+            <button id="btn-clear-img" class="icon-btn danger" title="Hapus gambar" type="button" aria-label="Hapus gambar">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+
+          <div class="composer-box" id="composer">
+            <textarea
+              id="input"
+              rows="1"
+              placeholder="Message AIRIN"
+              autofocus
+              aria-label="Pesan ke AIRIN"
+            ></textarea>
+            <div class="composer-toolbar">
+              <div class="toolbar-left">
+                <label class="pill-btn" title="Upload gambar" aria-label="Upload gambar">
+                  <i class="fa-solid fa-plus"></i>
+                  <input type="file" id="file-input" accept="image/*" hidden />
+                </label>
+                <span class="pill-btn muted-pill" title="Mode model">
+                  <i class="fa-solid fa-wand-magic-sparkles"></i>
+                  Smart
+                </span>
+              </div>
+              <button id="btn-send" class="send-btn" title="Kirim" aria-label="Kirim pesan" type="button">
+                <i class="fa-solid fa-arrow-up"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="suggestion-chips" id="suggestion-chips">
+            <button type="button" class="chip" data-prompt="Redesign landing page dengan Tailwind CSS modern minimal">Redesign UI Tailwind</button>
+            <button type="button" class="chip" data-prompt="Jelaskan cara deploy Cloudflare Worker TypeScript step by step">Deploy Worker TS</button>
+            <button type="button" class="chip" data-prompt="Cari berita teknologi terbaru hari ini">Cari berita tech</button>
+            <button type="button" class="chip" data-prompt="Review struktur repo GitHub saya dan sarankan improvement">Review repo GitHub</button>
+            <button type="button" class="chip" data-prompt="Buatkan struktur folder project Next.js + Cloudflare Workers">Scaffold Next.js</button>
+            <button type="button" class="chip" data-prompt="Analisis screenshot UI dan generate kode HTML Tailwind">Analisis screenshot</button>
+          </div>
+
+          <p class="disclaimer">
+            AIRIN adalah AI dan bisa membuat kesalahan. Cek info penting secara mandiri.
+          </p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const savedApi = localStorage.getItem("airin_api");
+    window.AIRIN_API =
+      savedApi === "http://localhost:8787"
+        ? "http://localhost:8788"
+        : savedApi || "http://localhost:8788";
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>
