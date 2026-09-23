@@ -94,9 +94,10 @@ async function analyzeImageWithVision(
   imageBase64: string,
   userQuestion: string
 ): Promise<string> {
-  const image = imageBase64.startsWith("data:")
-    ? imageBase64
-    : `data:image/png;base64,${imageBase64}`;
+  const rawImage = imageBase64.trim();
+  const image = rawImage.startsWith("data:image/")
+    ? rawImage
+    : `data:image/png;base64,${rawImage.replace(/\s/g, "")}`;
 
   const question =
     userQuestion?.trim() ||
@@ -110,19 +111,20 @@ async function analyzeImageWithVision(
     max_tokens: 2048,
     temperature: 0.2,
   })) as {
-    description?: string;
     answer?: string;
-    response?: string;
-    reasoning?: string;
+    reasoning?: { text?: string } | null;
   };
 
-  const text =
-    res.description ||
-    res.answer ||
-    res.response ||
-    (typeof res === "string" ? res : JSON.stringify(res));
+  const text = typeof res?.answer === "string" ? res.answer.trim() : "";
+  if (!text) {
+    throw new Error(
+      `Moondream returned no answer (finish_reason=${String((res as { finish_reason?: unknown })?.finish_reason || "unknown")})`
+    );
+  }
 
-  const reasoning = res.reasoning ? `\n\n[Reasoning]\n${res.reasoning}` : "";
+  const reasoning = res.reasoning?.text
+    ? `\n\n[Reasoning]\n${res.reasoning.text}`
+    : "";
   return (text + reasoning).trim() || "Tidak ada deskripsi vision yang dihasilkan.";
 }
 
@@ -159,7 +161,10 @@ export async function runAgent(
         "Gunakan hasil di atas sebagai ground-truth visual. Kalau diminta redesign, keluarkan kode HTML/Tailwind yang rapi dan siap pakai.",
       ].join("\n");
     } catch (e) {
-      console.error("Vision model failed:", e);
+      console.error(
+        "Vision model failed:",
+        e instanceof Error ? e.message : String(e)
+      );
       // fallback: tetap lanjut tanpa vision, biar agent text tetap hidup
       effectiveUserMessage =
         (req.message || "Analisis gambar ini.") +
