@@ -675,15 +675,11 @@ html, body {
     45deg,
     #ff0000,
     #ffff00,
-    #00ff00,
-    #0000ff,
-    #00ffff,
-    #ff00ff,
     #ff0000
   );
   background-size: 400% 100%;
   z-index: 0;
-  animation: airin-border-move 8s linear infinite;
+  animation: airin-border-move 4s linear infinite;
   pointer-events: none;
   filter: blur(10px);
   opacity: 0.75;

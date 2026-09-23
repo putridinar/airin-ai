@@ -110,22 +110,64 @@ async function analyzeImageWithVision(
     reasoning: true,
     max_tokens: 2048,
     temperature: 0.2,
+    stream: false,
   })) as {
     answer?: string;
     reasoning?: { text?: string } | null;
+    response?: unknown;
+    result?: unknown;
+    finish_reason?: string;
   };
 
-  const text = typeof res?.answer === "string" ? res.answer.trim() : "";
+  const payload = unwrapVisionResponse(res);
+  const text = typeof payload.answer === "string" ? payload.answer.trim() : "";
   if (!text) {
     throw new Error(
-      `Moondream returned no answer (finish_reason=${String((res as { finish_reason?: unknown })?.finish_reason || "unknown")})`
+      `Moondream returned no answer (finish_reason=${String(payload.finish_reason || "unknown")}, keys=${Object.keys(payload).join(",") || "none"})`
     );
   }
 
-  const reasoning = res.reasoning?.text
-    ? `\n\n[Reasoning]\n${res.reasoning.text}`
+  const reasoning = payload.reasoning?.text
+    ? `\n\n[Reasoning]\n${payload.reasoning.text}`
     : "";
   return (text + reasoning).trim() || "Tidak ada deskripsi vision yang dihasilkan.";
+}
+
+function unwrapVisionResponse(value: unknown): {
+  answer?: string;
+  reasoning?: { text?: string } | null;
+  finish_reason?: string;
+} {
+  let current = value;
+  for (let depth = 0; depth < 3; depth++) {
+    if (typeof current === "string") {
+      try {
+        current = JSON.parse(current);
+        continue;
+      } catch {
+        return { answer: current as string };
+      }
+    }
+    if (!current || typeof current !== "object") return {};
+
+    const object = current as Record<string, unknown>;
+    if (typeof object.answer === "string") {
+      return {
+        answer: object.answer,
+        reasoning:
+          object.reasoning && typeof object.reasoning === "object"
+            ? (object.reasoning as { text?: string })
+            : null,
+        finish_reason:
+          typeof object.finish_reason === "string"
+            ? object.finish_reason
+            : undefined,
+      };
+    }
+
+    current = object.response ?? object.result;
+  }
+  return {};
 }
 
 export async function runAgent(
