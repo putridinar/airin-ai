@@ -39,7 +39,7 @@ export async function storeMemory(
 
   try {
     const values = await embedText(env.AI, text);
-    const id = `${sessionId}-${crypto.randomUUID()}`;
+    const id = crypto.randomUUID();
     await env.VECTORIZE_INDEX.upsert([
       {
         id,

@@ -639,12 +639,25 @@ html, body {
     0 0 0 1px rgba(124, 156, 255, 0.12),
     0 12px 40px rgba(0, 0, 0, 0.4);
 }
+/* --- Base Layer & Konten --- */
+
+/* Base container (pastikan relative agar pseudo-element bekerja) */
+.composer-box {
+  position: relative;
+  border: 1px solid var(--border-color, #ccc); /* border default saat tidak mengetik */
+  border-radius: var(--radius-lg, 12px);
+  background: var(--bg-elevated, #fff);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
 
 /* Konten (textarea + toolbar) selalu di depan layer border */
 .composer-box > * {
   position: relative;
   z-index: 2;
 }
+
+
+/* --- State: Saat User Mengetik (.is-typing) --- */
 
 /* Hanya ring border yang animate */
 .composer-box.is-typing {
@@ -656,8 +669,8 @@ html, body {
 .composer-box.is-typing::before {
   content: "";
   position: absolute;
-  inset: -2px;
-  border-radius: calc(var(--radius-lg) + 2px);
+  inset: -2px; /* Tebal border gradien keluar sekitar 2px */
+  border-radius: calc(var(--radius-lg, 12px) + 2px);
   background-image: linear-gradient(
     45deg,
     #ff0000,
@@ -668,7 +681,7 @@ html, body {
     #ff00ff,
     #ff0000
   );
-  background-size: 400%;
+  background-size: 400% 100%;
   z-index: 0;
   animation: airin-border-move 8s linear infinite;
   pointer-events: none;
@@ -681,16 +694,23 @@ html, body {
   content: "";
   position: absolute;
   inset: 0;
-  border-radius: var(--radius-lg);
-  background: var(--bg-elevated);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--bg-elevated, #fff);
   z-index: 1;
   pointer-events: none;
 }
 
+
+/* --- Keyframes: Efek Mengalir Berputar Terus --- */
+
 @keyframes airin-border-move {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    /* Mengalir penuh ke 400% agar perputaran warna seamless (tanpa patah) */
+    background-position: 400% 0%;
+  }
 }
 
 #input {
