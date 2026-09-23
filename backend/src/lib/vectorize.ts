@@ -57,7 +57,8 @@ export async function storeMemory(
       // Local dev tanpa --remote: skip silent
       return;
     }
-    console.error("storeMemory error", e);
+    const detail = e instanceof Error ? e.message : String(e);
+    console.error("storeMemory error; chat response preserved", detail);
   }
 }
 

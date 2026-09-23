@@ -15,6 +15,17 @@ const VISION_MODEL = "@cf/moondream/moondream3.1-9B-A2B";
 const MAX_TOOL_ROUNDS = 6;
 const AI_MAX_RETRIES = 3;
 
+function looksLikeMissingVisionReply(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("hasil analisis vision") &&
+    (normalized.includes("belum tersedia") ||
+      normalized.includes("belum ada") ||
+      normalized.includes("berikan gambar") ||
+      normalized.includes("kirim gambar"))
+  );
+}
+
 export interface ChatRequest {
   message: string;
   history?: Array<{ role: string; content: string }>;
@@ -353,6 +364,36 @@ export async function runAgent(
   if (!finalReply) {
     finalReply =
       "Maaf, aku belum bisa menyelesaikan request ini. Coba lagi ya!";
+  }
+
+  // Some text-model responses incorrectly ignore the injected vision result.
+  // Give it one explicit retry before returning the misleading fallback.
+  if (visionSummary && looksLikeMissingVisionReply(finalReply)) {
+    try {
+      const retryResponse = (await runAIWithRetry(env, TEXT_MODEL, {
+        messages: [
+          messages[0],
+          {
+            role: "user",
+            content: [
+              "Gunakan hasil vision berikut sebagai fakta yang sudah tersedia. Jangan meminta user mengirim gambar lagi.",
+              "",
+              "## Hasil vision",
+              visionSummary,
+              "",
+              req.message?.trim() ||
+                "Buat analisis singkat dan, bila relevan, HTML/Tailwind redesign yang siap dipakai.",
+            ].join("\n"),
+          },
+        ],
+        max_tokens: 4096,
+      })) as { response?: string };
+      if (typeof retryResponse.response === "string" && retryResponse.response.trim()) {
+        finalReply = retryResponse.response.trim();
+      }
+    } catch (e) {
+      console.error("Vision-aware retry failed:", e);
+    }
   }
 
   // Kalau ada vision summary & user minta redesign, taruh ringkas di awal biar transparan
