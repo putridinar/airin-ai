@@ -137,9 +137,9 @@
   <script>
     const savedApi = localStorage.getItem("airin_api");
     window.AIRIN_API =
-      savedApi === "https://airin-ai.putridinar.workers.dev"
-        ? "http://localhost:8788"
-        : savedApi || "http://localhost:8788";
+      savedApi === "http://localhost:8787"
+        ? "https://airin-ai.putridinar.workers.dev"
+        : savedApi || "https://airin-ai.putridinar.workers.dev";
   </script>
   <script src="app.js"></script>
 </body>
