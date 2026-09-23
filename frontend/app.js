@@ -2,7 +2,7 @@
  * AIRIN AI — Frontend (Copilot-style UI + multi-thread)
  */
 
-const API = () => window.AIRIN_API || "http://localhost:8788";
+const API = () => window.AIRIN_API || "https://airin-ai.putridinar.workers.dev";
 
 const el = {
   messages: document.getElementById("messages"),
