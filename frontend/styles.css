@@ -675,6 +675,10 @@ html, body {
     45deg,
     #ff0000,
     #ffff00,
+    #00ff00,
+    #0000ff,
+    #00ffff,
+    #ff00ff,
     #ff0000
   );
   background-size: 400% 100%;
@@ -700,13 +704,12 @@ html, body {
 /* --- Keyframes: Efek Mengalir Berputar Terus --- */
 
 @keyframes airin-border-move {
-  0% {
-    background-position: 0% 0%;
-  }
-  100% {
-    /* Mengalir penuh ke 400% agar perputaran warna seamless (tanpa patah) */
-    background-position: 400% 0%;
-  }
+0%, 100%{
+background-position: 0 0;
+ }
+ 50%{
+ background-position: 100% 0;
+ }
 }
 
 #input {
