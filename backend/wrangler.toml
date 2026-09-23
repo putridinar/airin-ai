@@ -38,9 +38,9 @@ preview_id = "928846f46c834590a6555e4e2cf41bbf"
 
 # ── Vars (non-secret) ─────────────────────────────────────
 [vars]
-FRONTEND_ORIGIN = "http://localhost:3000"
+FRONTEND_ORIGIN = "https://airin-ai.pages.dev"
 # Production: set to your Pages/Vercel/GH Pages origin, e.g. "https://airin.pages.dev"
-GITHUB_REDIRECT_URI = "http://localhost:8788/auth/github/callback"
+GITHUB_REDIRECT_URI = "https://airin-ai.putridinar.workers.dev/auth/github/callback"
 # Production: "https://airin-ai.putridinar.workers.dev/auth/github/callback"
 
 # Secrets (set via CLI, never commit):
