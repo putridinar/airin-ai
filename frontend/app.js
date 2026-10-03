@@ -617,7 +617,7 @@ async function send() {
 }
 
 /* ── Image ── */
-function handleFile(file) {
+async function handleFile(file) {
   if (!file) return;
   if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
     window.alert("Gunakan gambar PNG, JPEG, atau WebP.");
@@ -627,13 +627,49 @@ function handleFile(file) {
     window.alert("Ukuran gambar maksimal 4 MiB.");
     return;
   }
-  const reader = new FileReader();
-  reader.onload = () => {
-    pendingImageBase64 = reader.result;
-    el.imgPreview.src = reader.result;
-    el.previewArea.classList.remove("hidden");
-  };
-  reader.readAsDataURL(file);
+
+  try {
+    const bitmap = await createImageBitmap(file);
+    let resized;
+    try {
+      const maxPixels = 1_000_000;
+      const maxDimension = 1600;
+      const scale = Math.min(
+        1,
+        Math.sqrt(maxPixels / (bitmap.width * bitmap.height)),
+        maxDimension / Math.max(bitmap.width, bitmap.height)
+      );
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.floor(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.floor(bitmap.height * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Browser tidak dapat memproses gambar.");
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      resized = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (blob) =>
+            blob ? resolve(blob) : reject(new Error("Gagal memproses gambar.")),
+          "image/webp",
+          0.85
+        );
+      });
+    } finally {
+      bitmap.close();
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      pendingImageBase64 = reader.result;
+      el.imgPreview.src = reader.result;
+      el.previewArea.classList.remove("hidden");
+    };
+    reader.onerror = () => window.alert("Gagal membaca gambar yang diproses.");
+    reader.readAsDataURL(resized);
+  } catch (err) {
+    window.alert(
+      err instanceof Error ? err.message : "Gagal memproses gambar."
+    );
+  }
 }
 
 function clearImage() {

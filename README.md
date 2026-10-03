@@ -41,7 +41,7 @@ airin-ai/
 | GitHub OAuth | `/auth/github` + tools baca/commit/push |
 | R2 | Upload, list, read file |
 | Website redesign | Call `website-reader-nine.vercel.app` + model redesign |
-| Vision | Upload PNG/JPEG/WebP (maksimal 4 MiB per gambar; API mendukung hingga 4 gambar) → structured visual attributes → analysis / UI code |
+| Vision | Upload PNG/JPEG/WebP (maksimal 4 MiB per gambar; frontend otomatis mengecilkan; API mendukung hingga 4 gambar dengan total resolusi maksimal 1 MP per permintaan) → structured visual attributes → analysis / UI code |
 
 ## Setup Backend
 

@@ -18,6 +18,7 @@ const VISION_MODEL = "@cf/cloudflare/clef-flash";
 const MAX_VISION_IMAGES = 4;
 const MAX_VISION_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_VISION_TOTAL_BYTES = 8 * 1024 * 1024;
+const MAX_VISION_TOTAL_PIXELS = 1_000_000;
 
 const MAX_TOOL_ROUNDS = 6;
 const AI_MAX_RETRIES = 3;
@@ -78,6 +79,109 @@ function looksLikeMissingVisionReply(text: string): boolean {
       normalized.includes("berikan gambar") ||
       normalized.includes("kirim gambar"))
   );
+}
+
+function getVisionImageDimensions(
+  base64: string,
+  mimeType: string
+): { width: number; height: number } | undefined {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  if (mimeType === "image/png") {
+    if (
+      bytes.length < 24 ||
+      bytes[0] !== 0x89 ||
+      bytes[1] !== 0x50 ||
+      bytes[2] !== 0x4e ||
+      bytes[3] !== 0x47
+    ) {
+      return undefined;
+    }
+    const view = new DataView(bytes.buffer);
+    return { width: view.getUint32(16), height: view.getUint32(20) };
+  }
+
+  if (mimeType === "image/jpeg") {
+    let offset = 2;
+    while (offset + 4 < bytes.length) {
+      if (bytes[offset] !== 0xff) return undefined;
+      const marker = bytes[offset + 1];
+      offset += 2;
+      if (marker === 0xd8 || marker === 0xd9 || marker === 0x01) continue;
+      if (marker >= 0xd0 && marker <= 0xd7) continue;
+
+      const segmentLength = (bytes[offset] << 8) | bytes[offset + 1];
+      if (segmentLength < 2 || offset + segmentLength > bytes.length) {
+        return undefined;
+      }
+      if (
+        [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(
+          marker
+        ) &&
+        segmentLength >= 7
+      ) {
+        return {
+          height: (bytes[offset + 3] << 8) | bytes[offset + 4],
+          width: (bytes[offset + 5] << 8) | bytes[offset + 6],
+        };
+      }
+      offset += segmentLength;
+    }
+    return undefined;
+  }
+
+  if (
+    mimeType === "image/webp" &&
+    bytes.length >= 20 &&
+    String.fromCharCode(...bytes.subarray(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.subarray(8, 12)) === "WEBP"
+  ) {
+    let offset = 12;
+    while (offset + 8 <= bytes.length) {
+      const chunk = String.fromCharCode(...bytes.subarray(offset, offset + 4));
+      const chunkSize = new DataView(bytes.buffer).getUint32(offset + 4, true);
+      const data = offset + 8;
+      if (data + chunkSize > bytes.length) return undefined;
+
+      if (chunk === "VP8X" && chunkSize >= 10) {
+        return {
+          width:
+            1 +
+            bytes[data + 4] +
+            (bytes[data + 5] << 8) +
+            (bytes[data + 6] << 16),
+          height:
+            1 +
+            bytes[data + 7] +
+            (bytes[data + 8] << 8) +
+            (bytes[data + 9] << 16),
+        };
+      }
+      if (chunk === "VP8 " && chunkSize >= 10) {
+        return {
+          width: ((bytes[data + 6] | (bytes[data + 7] << 8)) & 0x3fff),
+          height: ((bytes[data + 8] | (bytes[data + 9] << 8)) & 0x3fff),
+        };
+      }
+      if (chunk === "VP8L" && chunkSize >= 5 && bytes[data] === 0x2f) {
+        return {
+          width: 1 + bytes[data + 1] + ((bytes[data + 2] & 0x3f) << 8),
+          height:
+            1 +
+            ((bytes[data + 2] & 0xc0) >> 6) +
+            (bytes[data + 3] << 2) +
+            ((bytes[data + 4] & 0x0f) << 10),
+        };
+      }
+      offset = data + chunkSize + (chunkSize % 2);
+    }
+  }
+
+  return undefined;
 }
 
 function normalizeAgentModelResponse(value: unknown): AgentModelResponse {
@@ -335,6 +439,7 @@ function parseVisionImages(req: ChatRequest): string[] {
   }
 
   let totalBytes = 0;
+  let totalPixels = 0;
   return suppliedImages.map((input, index) => {
     const raw = input.trim();
     const dataUrlMatch = raw.match(
@@ -359,6 +464,16 @@ function parseVisionImages(req: ChatRequest): string[] {
     const byteLength = (base64.length / 4) * 3 - padding;
     if (byteLength > MAX_VISION_IMAGE_BYTES) {
       throw new Error(`Ukuran gambar ke-${index + 1} melebihi 4 MiB.`);
+    }
+    const dimensions = getVisionImageDimensions(base64, mimeType);
+    if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0) {
+      throw new Error(`Dimensi gambar ke-${index + 1} tidak dapat dibaca.`);
+    }
+    totalPixels += dimensions.width * dimensions.height;
+    if (totalPixels > MAX_VISION_TOTAL_PIXELS) {
+      throw new Error(
+        "Total resolusi gambar terlalu tinggi. Maksimal 1 megapiksel per permintaan; unggah melalui frontend agar gambar dikecilkan otomatis."
+      );
     }
     totalBytes += byteLength;
     if (totalBytes > MAX_VISION_TOTAL_BYTES) {
