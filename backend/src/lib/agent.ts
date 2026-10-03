@@ -1,7 +1,10 @@
+/// <reference types="@cloudflare/workers-types" />
+
 /**
  * AIRIN Agent Loop — multi-model
- * - Text / coding / tools : @cf/qwen/qwen2.5-coder-32b-instruct
- * - Vision                : @cf/moondream/moondream3.1-9B-A2B
+ * - Smart                 : @cf/qwen/qwen3-30b-a3b-fp8
+ * - Coder                 : @cf/qwen/qwen2.5-coder-32b-instruct
+ * - Vision decisions      : @cf/cloudflare/clef-flash
  */
 
 import { buildMessages } from "./system";
@@ -9,11 +12,62 @@ import { toOpenAITools } from "../tools/definitions";
 import { executeTool } from "../tools/executors";
 import { retrieveMemory, storeMemory } from "./vectorize";
 
-const TEXT_MODEL = "@cf/qwen/qwen2.5-coder-32b-instruct";
-const VISION_MODEL = "@cf/moondream/moondream3.1-9B-A2B";
+const SMART_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8";
+const CODER_MODEL = "@cf/qwen/qwen2.5-coder-32b-instruct";
+const VISION_MODEL = "@cf/cloudflare/clef-flash";
+const MAX_VISION_IMAGES = 4;
+const MAX_VISION_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_VISION_TOTAL_BYTES = 8 * 1024 * 1024;
 
 const MAX_TOOL_ROUNDS = 6;
 const AI_MAX_RETRIES = 3;
+
+interface AgentModelResponse {
+  response?: string;
+  tool_calls?: Array<{
+    id?: string;
+    type?: string;
+    function?: { name: string; arguments: string };
+    name?: string;
+    arguments?: string | Record<string, unknown>;
+  }>;
+  usage?: unknown;
+}
+
+function normalizeToolCallList(value: unknown): AgentModelResponse["tool_calls"] {
+  if (!Array.isArray(value)) return undefined;
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+
+    const call = item as Record<string, unknown>;
+    const fn =
+      call.function &&
+      typeof call.function === "object" &&
+      !Array.isArray(call.function)
+        ? (call.function as Record<string, unknown>)
+        : undefined;
+    const args = call.arguments;
+    const validArgs =
+      typeof args === "string" ||
+      (args !== null && typeof args === "object" && !Array.isArray(args));
+
+    return [
+      {
+        id: typeof call.id === "string" ? call.id : undefined,
+        type: typeof call.type === "string" ? call.type : undefined,
+        function:
+          typeof fn?.name === "string" && typeof fn.arguments === "string"
+            ? { name: fn.name, arguments: fn.arguments }
+            : undefined,
+        name: typeof call.name === "string" ? call.name : undefined,
+        arguments: validArgs
+          ? (args as string | Record<string, unknown>)
+          : undefined,
+      },
+    ];
+  });
+}
 
 function looksLikeMissingVisionReply(text: string): boolean {
   const normalized = text.toLowerCase();
@@ -26,13 +80,44 @@ function looksLikeMissingVisionReply(text: string): boolean {
   );
 }
 
+function normalizeAgentModelResponse(value: unknown): AgentModelResponse {
+  if (!value || typeof value !== "object") return {};
+
+  const response = value as Record<string, unknown>;
+  const choices = Array.isArray(response.choices) ? response.choices : [];
+  const firstChoice =
+    choices[0] && typeof choices[0] === "object"
+      ? (choices[0] as Record<string, unknown>)
+      : undefined;
+  const message =
+    firstChoice?.message && typeof firstChoice.message === "object"
+      ? (firstChoice.message as Record<string, unknown>)
+      : undefined;
+  const toolCalls = Array.isArray(response.tool_calls)
+    ? response.tool_calls
+    : message?.tool_calls;
+
+  return {
+    response:
+      typeof response.response === "string"
+        ? response.response
+        : typeof message?.content === "string"
+          ? message.content
+          : undefined,
+    tool_calls: normalizeToolCallList(toolCalls),
+    usage: response.usage,
+  };
+}
+
 export interface ChatRequest {
   message: string;
+  mode?: "smart" | "coder";
   history?: Array<{ role: string; content: string }>;
   sessionId?: string;
   /** Multi-thread: id conversation aktif (logged-in) */
   conversationId?: string;
   imageBase64?: string;
+  images?: string[];
   githubToken?: string;
   stream?: boolean;
 }
@@ -85,89 +170,262 @@ async function runAIWithRetry(
   throw lastErr;
 }
 
-/**
- * Vision pipeline via Moondream 3.1
- * task=query → open-ended visual reasoning + optional redesign brief
- */
-async function analyzeImageWithVision(
-  env: Env,
-  imageBase64: string,
-  userQuestion: string
-): Promise<string> {
-  const rawImage = imageBase64.trim();
-  const image = rawImage.startsWith("data:image/")
-    ? rawImage
-    : `data:image/png;base64,${rawImage.replace(/\s/g, "")}`;
+type ClefAnswer =
+  | { type: "noul"; noul: number }
+  | { type: "choice"; choice: string; confidence: number }
+  | {
+      type: "score";
+      score: number;
+      confidence: number;
+      legend?: Record<string, string>;
+    };
 
-  const question =
-    userQuestion?.trim() ||
-    "Analisis layout, komponen UI, warna, tipografi, spacing, dan hierarchy visual gambar ini secara detail. Jika ini screenshot website/app, berikan brief redesign yang actionable (struktur, Tailwind classes yang cocok, improvement UX).";
+const VISION_QUESTIONS = {
+  image_type: {
+    type: "choice",
+    instructions: "Classify the primary type of the attached image.",
+    criteria: {
+      website_screenshot: "A screenshot of a website or web application.",
+      mobile_app_screenshot: "A screenshot of a mobile application.",
+      desktop_software: "A screenshot of desktop software.",
+      photograph: "A real-world photograph.",
+      illustration: "An illustration, drawing, or rendered artwork.",
+      document: "A document, slide, or page of text.",
+      chart: "A chart, graph, or data visualization.",
+      other: "Another kind of image.",
+      unclear: "The image is not clear enough to classify.",
+    },
+  },
+  ui_platform: {
+    type: "choice",
+    instructions: "If the image shows a user interface, identify its platform.",
+    criteria: {
+      desktop_web: "A website or web application on a desktop-sized screen.",
+      mobile_web: "A website displayed on a mobile-sized screen.",
+      mobile_app: "A native mobile application interface.",
+      desktop_app: "A desktop software application interface.",
+      tablet_app: "A tablet application interface.",
+      not_a_user_interface: "The image does not show a user interface.",
+      unclear: "The interface platform cannot be determined.",
+    },
+  },
+  layout: {
+    type: "choice",
+    instructions: "Identify the most prominent overall layout structure.",
+    criteria: {
+      sidebar: "A prominent side navigation or sidebar layout.",
+      top_navigation: "A prominent top navigation layout.",
+      dashboard: "A dashboard with multiple information panels.",
+      card_grid: "A grid or list of repeated cards.",
+      form: "A form or data-entry focused layout.",
+      editorial: "A text or editorial content-focused layout.",
+      full_screen_media: "An image or media-dominant layout.",
+      other: "Another recognizable layout structure.",
+      unclear: "The layout structure is not clear.",
+    },
+  },
+  color_theme: {
+    type: "choice",
+    instructions: "Classify the dominant visual color theme.",
+    criteria: {
+      dark: "Predominantly dark backgrounds and light foregrounds.",
+      light: "Predominantly light backgrounds and dark foregrounds.",
+      colorful: "Several vivid, saturated colors dominate.",
+      monochrome: "Mostly grayscale or a single color family.",
+      mixed: "A balanced mix of light and dark regions.",
+      unclear: "The color theme cannot be determined.",
+    },
+  },
+  design_style: {
+    type: "choice",
+    instructions: "Choose the closest overall visual design style.",
+    criteria: {
+      minimal: "Minimal, restrained, and low in visual ornament.",
+      modern: "Contemporary product or technology interface styling.",
+      corporate: "Formal business or enterprise styling.",
+      playful: "Expressive, friendly, or playful styling.",
+      editorial: "Magazine, publishing, or typography-led styling.",
+      skeuomorphic: "Uses realistic textures, depth, or physical metaphors.",
+      other: "Another recognizable visual style.",
+      unclear: "The visual style is not clear.",
+    },
+  },
+  visible_text: {
+    type: "noul",
+    instructions: "Is readable text visibly present in the image?",
+    criteria: {
+      true: "Readable words or labels are visible.",
+      false: "No readable text is visible.",
+    },
+  },
+  visual_hierarchy: {
+    type: "score",
+    instructions: "Rate how clearly visual emphasis and hierarchy are established.",
+    criteria: [
+      "No discernible hierarchy.",
+      "Weak hierarchy; important elements are difficult to distinguish.",
+      "Moderate hierarchy with some clear emphasis.",
+      "Clear hierarchy; primary and secondary elements are distinguishable.",
+      "Very clear and consistent visual hierarchy.",
+    ],
+  },
+} as const;
 
-  const res = (await runAIWithRetry(env, VISION_MODEL, {
-    task: "query",
-    image,
-    question,
-    reasoning: true,
-    max_tokens: 2048,
-    temperature: 0.2,
-    stream: false,
-  })) as {
-    answer?: string;
-    reasoning?: { text?: string } | null;
-    response?: unknown;
-    result?: unknown;
-    finish_reason?: string;
-  };
+const VISION_LABELS: Record<string, Record<string, string>> = {
+  image_type: {
+    website_screenshot: "Screenshot website/web app",
+    mobile_app_screenshot: "Screenshot aplikasi mobile",
+    desktop_software: "Screenshot software desktop",
+    photograph: "Foto",
+    illustration: "Ilustrasi atau artwork",
+    document: "Dokumen atau slide",
+    chart: "Chart atau visualisasi data",
+    other: "Jenis gambar lainnya",
+    unclear: "Jenis gambar belum jelas",
+  },
+  ui_platform: {
+    desktop_web: "Web desktop",
+    mobile_web: "Web mobile",
+    mobile_app: "Aplikasi mobile",
+    desktop_app: "Aplikasi desktop",
+    tablet_app: "Aplikasi tablet",
+    not_a_user_interface: "Bukan antarmuka pengguna",
+    unclear: "Platform belum jelas",
+  },
+  layout: {
+    sidebar: "Navigasi samping",
+    top_navigation: "Navigasi atas",
+    dashboard: "Dashboard",
+    card_grid: "Grid atau daftar kartu",
+    form: "Formulir",
+    editorial: "Konten editorial",
+    full_screen_media: "Media layar penuh",
+    other: "Struktur lainnya",
+    unclear: "Layout belum jelas",
+  },
+  color_theme: {
+    dark: "Dominan gelap",
+    light: "Dominan terang",
+    colorful: "Warna-warna cerah",
+    monochrome: "Monokrom",
+    mixed: "Campuran terang dan gelap",
+    unclear: "Palet belum jelas",
+  },
+  design_style: {
+    minimal: "Minimalis",
+    modern: "Modern",
+    corporate: "Korporat",
+    playful: "Playful",
+    editorial: "Editorial",
+    skeuomorphic: "Skeuomorphic",
+    other: "Gaya lainnya",
+    unclear: "Gaya belum jelas",
+  },
+};
 
-  const payload = unwrapVisionResponse(res);
-  const text = typeof payload.answer === "string" ? payload.answer.trim() : "";
-  if (!text) {
-    throw new Error(
-      `Moondream returned no answer (finish_reason=${String(payload.finish_reason || "unknown")}, keys=${Object.keys(payload).join(",") || "none"})`
-    );
+function parseVisionImages(req: ChatRequest): string[] {
+  const suppliedImages = req.images?.length
+    ? req.images
+    : req.imageBase64
+      ? [req.imageBase64]
+      : [];
+
+  if (suppliedImages.length > MAX_VISION_IMAGES) {
+    throw new Error(`Maksimal ${MAX_VISION_IMAGES} gambar per permintaan.`);
   }
 
-  const reasoning = payload.reasoning?.text
-    ? `\n\n[Reasoning]\n${payload.reasoning.text}`
-    : "";
-  return (text + reasoning).trim() || "Tidak ada deskripsi vision yang dihasilkan.";
+  let totalBytes = 0;
+  return suppliedImages.map((input, index) => {
+    const raw = input.trim();
+    const dataUrlMatch = raw.match(
+      /^data:(image\/(?:png|jpeg|webp));base64,([\s\S]+)$/i
+    );
+    if (raw.startsWith("data:") && !dataUrlMatch) {
+      throw new Error(
+        `Gambar ke-${index + 1} harus berupa PNG, JPEG, atau WebP base64.`
+      );
+    }
+    if (!dataUrlMatch && !/^[A-Za-z0-9+/=\s]+$/.test(raw)) {
+      throw new Error("Gambar harus dikirim sebagai data base64, bukan URL.");
+    }
+
+    const mimeType = dataUrlMatch?.[1].toLowerCase() || "image/png";
+    const base64 = (dataUrlMatch?.[2] || raw).replace(/\s/g, "");
+    if (!base64 || base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64)) {
+      throw new Error(`Data base64 gambar ke-${index + 1} tidak valid.`);
+    }
+
+    const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+    const byteLength = (base64.length / 4) * 3 - padding;
+    if (byteLength > MAX_VISION_IMAGE_BYTES) {
+      throw new Error(`Ukuran gambar ke-${index + 1} melebihi 4 MiB.`);
+    }
+    totalBytes += byteLength;
+    if (totalBytes > MAX_VISION_TOTAL_BYTES) {
+      throw new Error("Total ukuran gambar melebihi 8 MiB.");
+    }
+
+    return `data:${mimeType};base64,${base64}`;
+  });
 }
 
-function unwrapVisionResponse(value: unknown): {
-  answer?: string;
-  reasoning?: { text?: string } | null;
-  finish_reason?: string;
-} {
-  let current = value;
-  for (let depth = 0; depth < 3; depth++) {
-    if (typeof current === "string") {
-      try {
-        current = JSON.parse(current);
-        continue;
-      } catch {
-        return { answer: current as string };
-      }
-    }
-    if (!current || typeof current !== "object") return {};
+function formatClefAnswer(
+  question: string,
+  answer: ClefAnswer | undefined
+): string {
+  if (!answer) throw new Error(`Clef Flash did not return "${question}".`);
 
-    const object = current as Record<string, unknown>;
-    if (typeof object.answer === "string") {
-      return {
-        answer: object.answer,
-        reasoning:
-          object.reasoning && typeof object.reasoning === "object"
-            ? (object.reasoning as { text?: string })
-            : null,
-        finish_reason:
-          typeof object.finish_reason === "string"
-            ? object.finish_reason
-            : undefined,
-      };
-    }
-
-    current = object.response ?? object.result;
+  if (answer.type === "choice") {
+    const label = VISION_LABELS[question]?.[answer.choice] || answer.choice;
+    return `${label} (keyakinan ${Math.round(answer.confidence * 100)}%)`;
   }
-  return {};
+  if (answer.type === "noul") {
+    return answer.noul >= 0.5 ? "Ya" : "Tidak";
+  }
+  if (answer.type === "score") {
+    const level = Math.max(
+      0,
+      Math.min(Math.round(answer.score), (answer.legend && Object.keys(answer.legend).length - 1) || 4)
+    );
+    const description = answer.legend?.[String(level)];
+    return `${answer.score.toFixed(1)}/4${description ? ` — ${description}` : ""} (keyakinan ${Math.round(answer.confidence * 100)}%)`;
+  }
+  throw new Error(`Clef Flash returned an unsupported answer for "${question}".`);
+}
+
+/** Clef Flash classifies visual evidence; Qwen turns these observations into a response. */
+async function analyzeImageWithVision(
+  env: Env,
+  images: string[],
+  userQuestion: string
+): Promise<string> {
+  const state = [
+    "Analyze only visible evidence in the attached image(s). Do not infer or invent text or details that are not legible.",
+    userQuestion?.trim() ? `User request: ${userQuestion.trim()}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const response = (await runAIWithRetry(env, VISION_MODEL, {
+    model: "clef-flash",
+    state,
+    questions: VISION_QUESTIONS,
+    images,
+  })) as { answers?: Record<string, ClefAnswer> };
+
+  if (!response.answers || typeof response.answers !== "object") {
+    throw new Error("Clef Flash returned no structured visual answers.");
+  }
+
+  return [
+    `- Jenis gambar: ${formatClefAnswer("image_type", response.answers.image_type)}`,
+    `- Antarmuka: ${formatClefAnswer("ui_platform", response.answers.ui_platform)}`,
+    `- Struktur layout: ${formatClefAnswer("layout", response.answers.layout)}`,
+    `- Tema warna: ${formatClefAnswer("color_theme", response.answers.color_theme)}`,
+    `- Gaya visual: ${formatClefAnswer("design_style", response.answers.design_style)}`,
+    `- Teks terbaca: ${formatClefAnswer("visible_text", response.answers.visible_text)}`,
+    `- Hierarki visual: ${formatClefAnswer("visual_hierarchy", response.answers.visual_hierarchy)}`,
+  ].join("\n");
 }
 
 export async function runAgent(
@@ -175,6 +433,8 @@ export async function runAgent(
   req: ChatRequest
 ): Promise<ChatResult> {
   const sessionId = req.sessionId || crypto.randomUUID();
+  const mode = req.mode === "coder" ? "coder" : "smart";
+  const textModel = mode === "coder" ? CODER_MODEL : SMART_MODEL;
   const serverTime = new Date().toISOString();
   const history = req.history || [];
 
@@ -182,14 +442,17 @@ export async function runAgent(
   const ragContext = await retrieveMemory(env, sessionId, req.message);
 
   let visionSummary: string | undefined;
+  let visionAnalysisFailed = false;
   let effectiveUserMessage = req.message || "";
 
   // ── Multi-model: Vision dulu kalau ada gambar ─────────────────
-  if (req.imageBase64) {
+  const hasImages = Boolean(req.imageBase64 || req.images?.length);
+  if (hasImages) {
     try {
+      const images = parseVisionImages(req);
       visionSummary = await analyzeImageWithVision(
         env,
-        req.imageBase64,
+        images,
         req.message
       );
       effectiveUserMessage = [
@@ -197,12 +460,13 @@ export async function runAgent(
           ? `Permintaan user: ${req.message.trim()}`
           : "User mengirim gambar/screenshot. Analisis & redesign UI jika relevan.",
         "",
-        "## Hasil analisis vision (Moondream 3.1)",
+        "## Atribut visual terstruktur (Clef Flash)",
         visionSummary,
         "",
-        "Gunakan hasil di atas sebagai ground-truth visual. Kalau diminta redesign, keluarkan kode HTML/Tailwind yang rapi dan siap pakai.",
+        "Gunakan atribut terstruktur ini sebagai petunjuk visual, bukan deskripsi lengkap. Jangan mengarang teks atau detail gambar yang tidak tercantum. Kalau diminta redesign, keluarkan kode HTML/Tailwind yang rapi dan siap pakai.",
       ].join("\n");
     } catch (e) {
+      visionAnalysisFailed = true;
       console.error(
         "Vision model failed:",
         e instanceof Error ? e.message : String(e)
@@ -210,7 +474,7 @@ export async function runAgent(
       // fallback: tetap lanjut tanpa vision, biar agent text tetap hidup
       effectiveUserMessage =
         (req.message || "Analisis gambar ini.") +
-        "\n\n[Catatan sistem: vision model gagal dipanggil. Jawab sebisanya dari teks saja.]";
+        "\n\n[Catatan sistem: analisis visual terstruktur gagal. Jawab pertanyaan teks saja dan jangan mengarang isi gambar.]";
     }
   }
 
@@ -219,6 +483,7 @@ export async function runAgent(
     userMessage: effectiveUserMessage,
     serverTime,
     ragContext: ragContext || undefined,
+    mode,
   });
 
   if (req.githubToken) {
@@ -238,21 +503,12 @@ export async function runAgent(
 
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const response = (await runAIWithRetry(env, TEXT_MODEL, {
+      const modelResponse = await runAIWithRetry(env, textModel, {
         messages,
         tools: round === MAX_TOOL_ROUNDS - 1 ? [] : tools,
         max_tokens: 4096,
-      })) as {
-        response?: string;
-        tool_calls?: Array<{
-          id?: string;
-          type?: string;
-          function?: { name: string; arguments: string };
-          name?: string;
-          arguments?: string | Record<string, unknown>;
-        }>;
-        usage?: unknown;
-      };
+      });
+      const response = normalizeAgentModelResponse(modelResponse);
 
       usage = response.usage ?? usage;
 
@@ -402,7 +658,7 @@ export async function runAgent(
   } catch (e) {
     if (isCapacityError(e)) {
       throw new Error(
-        "Workers AI lagi penuh (error 3040 Capacity exceeded). Tunggu 10–30 detik lalu coba lagi. Model besar (Qwen2.5-Coder 32B) sering kena limit di free tier."
+        `Workers AI lagi penuh (error 3040 Capacity exceeded) untuk model ${textModel}. Tunggu 10–30 detik lalu coba lagi.`
       );
     }
     throw e;
@@ -413,28 +669,36 @@ export async function runAgent(
       "Maaf, aku belum bisa menyelesaikan request ini. Coba lagi ya!";
   }
 
+  if (visionAnalysisFailed) {
+    finalReply =
+      "Catatan: AIRIN belum berhasil memproses gambar, jadi detail visual belum dapat dianalisis. Coba unggah PNG, JPEG, atau WebP maksimal 4 MiB per gambar, lalu coba lagi.\n\n" +
+      finalReply;
+  }
+
   // Some text-model responses incorrectly ignore the injected vision result.
   // Give it one explicit retry before returning the misleading fallback.
   if (visionSummary && looksLikeMissingVisionReply(finalReply)) {
     try {
-      const retryResponse = (await runAIWithRetry(env, TEXT_MODEL, {
-        messages: [
-          messages[0],
-          {
-            role: "user",
-            content: [
-              "Gunakan hasil vision berikut sebagai fakta yang sudah tersedia. Jangan meminta user mengirim gambar lagi.",
-              "",
-              "## Hasil vision",
-              visionSummary,
-              "",
-              req.message?.trim() ||
-                "Buat analisis singkat dan, bila relevan, HTML/Tailwind redesign yang siap dipakai.",
-            ].join("\n"),
-          },
-        ],
-        max_tokens: 4096,
-      })) as { response?: string };
+      const retryResponse = normalizeAgentModelResponse(
+        await runAIWithRetry(env, textModel, {
+          messages: [
+            messages[0],
+            {
+              role: "user",
+              content: [
+                "Gunakan hasil vision berikut sebagai fakta yang sudah tersedia. Jangan meminta user mengirim gambar lagi.",
+                "",
+                "## Hasil vision",
+                visionSummary,
+                "",
+                req.message?.trim() ||
+                  "Buat analisis singkat dan, bila relevan, HTML/Tailwind redesign yang siap dipakai.",
+              ].join("\n"),
+            },
+          ],
+          max_tokens: 4096,
+        })
+      );
       if (typeof retryResponse.response === "string" && retryResponse.response.trim()) {
         finalReply = retryResponse.response.trim();
       }
@@ -605,4 +869,7 @@ function normalizeToolCalls(response: {
   return parseTextToolCalls(
     typeof response.response === "string" ? response.response : ""
   );
+}
+function setTimeout(r: (value: unknown) => void, ms: number): void {
+  throw new Error("Function not implemented.");
 }

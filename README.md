@@ -2,8 +2,9 @@
 
 Asisten AI serba bisa di atas **Cloudflare Workers AI** (multi-model) + frontend vanilla.
 
-- **Text / coding / agent**: `@cf/qwen/qwen2.5-coder-32b-instruct`
-- **Vision**: `@cf/moondream/moondream3.1-9B-A2B`
+- **Smart mode**: `@cf/qwen/qwen3-30b-a3b-fp8` (general chat, explanations, search, analysis)
+- **Coder mode**: `@cf/qwen/qwen2.5-coder-32b-instruct` (coding, debugging, errors)
+- **Vision**: `@cf/cloudflare/clef-flash` (structured visual attributes; Qwen composes the response)
 
 ```
 airin-ai/
@@ -32,14 +33,15 @@ airin-ai/
 | Fitur | Keterangan |
 | --- | --- |
 | Personality dual-mode | Gaul/casual ↔ profesional otomatis |
-| Model (text) | `@cf/qwen/qwen2.5-coder-32b-instruct` (coding + agent) |
-| Model (vision) | `@cf/moondream/moondream3.1-9B-A2B` (query / caption / detect) |
+| Model (Smart) | `@cf/qwen/qwen3-30b-a3b-fp8` (general chat, explanations, search, analysis) |
+| Model (Coder) | `@cf/qwen/qwen2.5-coder-32b-instruct` (coding, debugging, error fixing) |
+| Model (vision) | `@cf/cloudflare/clef-flash` (structured visual attributes for Qwen) |
 | Context | Sliding window + Vectorize RAG |
 | Web search | DuckDuckGo (tanpa API key) |
 | GitHub OAuth | `/auth/github` + tools baca/commit/push |
 | R2 | Upload, list, read file |
 | Website redesign | Call `website-reader-nine.vercel.app` + model redesign |
-| Vision | Upload / paste screenshot → analisis + UI code |
+| Vision | Upload PNG/JPEG/WebP (maksimal 4 MiB per gambar; API mendukung hingga 4 gambar) → structured visual attributes → analysis / UI code |
 
 ## Setup Backend
 
@@ -78,7 +80,18 @@ npx wrangler deploy
 
 ## Setup Frontend
 
-1. Buka `frontend/app.js` / `index.html` — set `window.AIRIN_API` ke URL Worker:
+Frontend memakai React + Vite dengan komponen Magic UI. Logika chat, OAuth, dan
+penyimpanan percakapan tetap berada di `frontend/app.js`.
+
+1. Install dependency dan jalankan frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+2. Untuk mengganti URL Worker, set `window.AIRIN_API` di `frontend/index.html`:
 
 ```js
 window.AIRIN_API = "https://airin-ai.<subdomain>.workers.dev";
@@ -90,13 +103,19 @@ Atau di browser console / localStorage:
 localStorage.setItem("airin_api", "https://airin-ai.xxx.workers.dev");
 ```
 
-2. Deploy static folder `frontend/` ke:
+3. Build untuk deployment. Vite menghasilkan situs statis di `frontend/dist/`:
 
-   - **Cloudflare Pages**: `npx wrangler pages deploy frontend`
-   - **Vercel**: `vercel frontend --yes`
-   - **GitHub Pages**: push folder `frontend` ke branch `gh-pages`
+```bash
+npm run build
+```
 
-3. Update CORS: set `FRONTEND_ORIGIN` di Worker ke origin frontend production.
+Deploy isi folder `frontend/dist/` ke:
+
+   - **Cloudflare Pages**: `npx wrangler pages deploy frontend/dist`
+   - **Vercel**: `vercel frontend/dist --yes`
+   - **GitHub Pages**: publish folder `frontend/dist/` dari workflow deployment
+
+4. Update CORS: set `FRONTEND_ORIGIN` di Worker ke origin frontend production.
 
 ## API Endpoints
 

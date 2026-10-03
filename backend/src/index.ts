@@ -51,8 +51,11 @@ export default {
           {
             ok: true,
             service: "AIRIN AI Backend",
-            model: "@cf/qwen/qwen2.5-coder-32b-instruct",
-            vision: "@cf/moondream/moondream3.1-9B-A2B",
+            models: {
+              smart: "@cf/qwen/qwen3-30b-a3b-fp8",
+              coder: "@cf/qwen/qwen2.5-coder-32b-instruct",
+            },
+            vision: "@cf/cloudflare/clef-flash",
             time: new Date().toISOString(),
           },
           200,
@@ -215,9 +218,9 @@ export default {
         const body = (await request.json()) as ChatRequest & {
           conversationId?: string;
         };
-        if (!body.message && !body.imageBase64) {
+        if (!body.message && !body.imageBase64 && !body.images?.length) {
           return jsonResponse(
-            { error: "message or imageBase64 required" },
+            { error: "message or image required" },
             400,
             origin,
             allowed

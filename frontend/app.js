@@ -28,6 +28,7 @@ const el = {
   stage: document.getElementById("stage"),
   greeting: document.getElementById("greeting"),
   chips: document.getElementById("suggestion-chips"),
+  modelMode: document.getElementById("model-mode"),
   modeBadge: document.getElementById("mode-badge"),
   modeBadgeText: document.getElementById("mode-badge-text"),
   userAvatar: document.getElementById("user-avatar"),
@@ -37,6 +38,7 @@ const el = {
 
 const ANON_STORE_KEY = "airin_anon_threads";
 const ANON_SESSION_KEY = "airin_anon_session";
+const MODEL_MODE_KEY = "airin_model_mode";
 
 let conversations = [];
 let activeConvId = null;
@@ -46,6 +48,18 @@ let githubToken = localStorage.getItem("airin_github_token") || null;
 let githubLogin = null;
 let pendingImageBase64 = null;
 let busy = false;
+
+function getModelMode() {
+  if (el.modelMode.value === "coder") return "coder";
+  if (el.modelMode.value === "smart") return "smart";
+  return localStorage.getItem(MODEL_MODE_KEY) === "coder" ? "coder" : "smart";
+}
+
+el.modelMode.value =
+  localStorage.getItem(MODEL_MODE_KEY) === "coder" ? "coder" : "smart";
+el.modelMode.addEventListener("change", () => {
+  localStorage.setItem(MODEL_MODE_KEY, getModelMode());
+});
 
 function isLoggedIn() {
   return Boolean(githubToken);
@@ -93,9 +107,11 @@ function updateUserCard() {
 
 function updateGreeting() {
   const name = githubLogin || "";
-  el.greeting.textContent = name
+  const greeting = name
     ? `Hai ${name}, ada yang bisa AIRIN bantu?`
     : "Hai, ada yang bisa AIRIN bantu?";
+  if (window.setAirinGreeting) window.setAirinGreeting(greeting);
+  else el.greeting.textContent = greeting;
 }
 
 /* ── Anon store ── */
@@ -270,7 +286,10 @@ function renderConvList() {
     });
     btn.querySelector(".delete")?.addEventListener("click", async (e) => {
       e.stopPropagation();
-      if (!confirm("Hapus percakapan ini?")) return;
+      if (!(await window.confirm("Hapus percakapan ini?", {
+        title: "Hapus percakapan?",
+        confirmLabel: "Hapus",
+      }))) return;
       if (isLoggedIn()) {
         await apiDeleteConversation(c.id);
         if (activeConvId === c.id) {
@@ -365,7 +384,7 @@ document.addEventListener("keydown", (e) => {
   if (token) {
     githubToken = token;
     localStorage.setItem("airin_github_token", token);
-    history.replaceState(null, "", location.pathname + location.search);
+    window.history.replaceState(null, "", location.pathname + location.search);
   }
 })();
 
@@ -397,7 +416,12 @@ function addMessage(role, content, extra = {}) {
   const roleLabel =
     role === "user" ? "Kamu" : role === "assistant" ? "AIRIN" : "";
   let html = roleLabel ? `<div class="role">${roleIcon}${roleLabel}</div>` : "";
-  html += formatContent(content);
+  const shouldAnimate = role === "assistant" && extra.animate && window.animateAirinReply;
+  if (shouldAnimate) {
+    html += '<div class="message-content"></div>';
+  } else {
+    html += formatContent(content);
+  }
   if (extra.image) {
     html += `<img class="chat-img" src="${extra.image}" alt="Gambar terkirim" />`;
   }
@@ -414,6 +438,13 @@ function addMessage(role, content, extra = {}) {
   }
   div.innerHTML = html;
   el.messages.appendChild(div);
+  if (shouldAnimate) {
+    const contentEl = div.querySelector(".message-content");
+    window.animateAirinReply(contentEl, content, () => {
+      contentEl.innerHTML = formatContent(content);
+      el.messages.scrollTop = el.messages.scrollHeight;
+    });
+  }
   el.messages.scrollTop = el.messages.scrollHeight;
   el.stage.classList.remove("is-empty");
   return div;
@@ -538,6 +569,7 @@ async function send() {
     sessionId,
     conversationId: activeConvId || undefined,
     githubToken: githubToken || undefined,
+    mode: getModelMode(),
   };
   if (pendingImageBase64) payload.imageBase64 = pendingImageBase64;
 
@@ -563,7 +595,7 @@ async function send() {
 
     const reply = data.reply || "(kosong)";
     history.push({ role: "assistant", content: reply });
-    addMessage("assistant", reply, { tools: data.toolCalls });
+    addMessage("assistant", reply, { animate: true, tools: data.toolCalls });
 
     if (data.conversationId) activeConvId = data.conversationId;
     if (data.conversationTitle) setChatTitle(data.conversationTitle);
@@ -586,7 +618,15 @@ async function send() {
 
 /* ── Image ── */
 function handleFile(file) {
-  if (!file || !file.type.startsWith("image/")) return;
+  if (!file) return;
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+    window.alert("Gunakan gambar PNG, JPEG, atau WebP.");
+    return;
+  }
+  if (file.size > 4 * 1024 * 1024) {
+    window.alert("Ukuran gambar maksimal 4 MiB.");
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => {
     pendingImageBase64 = reader.result;
